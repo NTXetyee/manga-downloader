@@ -1,0 +1,16 @@
+# render.yaml — Infrastructure-as-code for Render.
+# With this file in the repo root you can "Blueprint" the service instead of
+# clicking through the dashboard. See the README for the manual path too.
+services:
+  - type: web
+    name: mangadex-pdf-downloader
+    runtime: node
+    plan: free
+    region: oregon            # pick the region closest to you
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      # PORT is injected by Render automatically — do NOT set it yourself.
