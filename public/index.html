@@ -3,21 +3,21 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>MangaDex → PDF</title>
+  <title>Manga → PDF</title>
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
   <main class="wrap">
     <header>
-      <h1>MangaDex&nbsp;→&nbsp;PDF</h1>
-      <p class="sub">Paste a MangaDex title URL, pick chapters, download each as a PDF.</p>
+      <h1>Manga&nbsp;→&nbsp;PDF</h1>
+      <p class="sub">Paste a MangaDex or Dynasty Scans title URL, pick chapters, download as PDF.</p>
     </header>
 
     <form id="search-form" class="search">
       <input
         id="url"
         type="text"
-        placeholder="https://mangadex.org/title/…"
+        placeholder="https://mangadex.org/title/…  or  https://dynasty-scans.com/series/…"
         autocomplete="off"
         required
       />
@@ -49,6 +49,10 @@
             <option value="datasaver">Data-saver (smaller)</option>
             <option value="original">Original (larger)</option>
           </select>
+        </label>
+        <label class="quality zip-opt" title="Bundle every selected chapter into a single .zip of PDFs">
+          <input type="checkbox" id="zip" />
+          Zip together
         </label>
         <div class="spacer"></div>
         <button id="select-all" class="ghost" type="button">Select all</button>

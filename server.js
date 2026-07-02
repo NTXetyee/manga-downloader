@@ -2,14 +2,9 @@
 import express from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  parseMangaId,
-  getManga,
-  getChapters,
-  getChapterPageUrls,
-  downloadImage,
-} from "./lib/mangadex.js";
-import { streamChapterPdf } from "./lib/pdf.js";
+import { resolveSource, getSource } from "./lib/sources.js";
+import { streamChapterPdf, buildChapterPdfBuffer } from "./lib/pdf.js";
+import { createZip } from "./lib/zip.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -46,6 +41,17 @@ function takeJob(id) {
 
 const safeName = (s) => s.replace(/[^\w.\- ]+/g, "_").slice(0, 120);
 
+// Open a Server-Sent Events stream and return a `send(event, data)` helper.
+function openSse(res) {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+  return (event, data) =>
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+}
+
 // ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
@@ -54,29 +60,37 @@ const safeName = (s) => s.replace(/[^\w.\- ]+/g, "_").slice(0, 120);
 // keeps the free instance from spinning down after 15 min idle.
 app.get("/healthz", (_req, res) => res.json({ ok: true }));
 
-// 1) Resolve a MangaDex URL -> manga metadata + chapter list.
+// 1) Resolve a source URL -> manga metadata + chapter list.
+//    The source is auto-detected from the URL and echoed back so the client can
+//    tag later prepare/download calls with it.
 app.get("/api/manga", async (req, res) => {
+  const source = resolveSource(req.query.url);
+  if (!source) {
+    return res.status(400).json({
+      error: "Unrecognized URL. Paste a MangaDex or Dynasty Scans link.",
+    });
+  }
   try {
-    const mangaId = parseMangaId(req.query.url);
+    const mangaId = source.parseId(req.query.url);
     if (!mangaId) {
       return res
         .status(400)
-        .json({ error: "Could not find a MangaDex manga ID in that URL." });
+        .json({ error: `Could not find a ${source.name} id in that URL.` });
     }
     const language = (req.query.lang || "en").toString();
     const [manga, chapters] = await Promise.all([
-      getManga(mangaId),
-      getChapters(mangaId, language),
+      source.getManga(mangaId),
+      source.getChapters(mangaId, language),
     ]);
     if (chapters.length === 0) {
       return res.status(404).json({
-        error: `No downloadable "${language}" chapters found for this title.`,
+        error: `No downloadable chapters found for this title.`,
       });
     }
-    res.json({ manga, chapters });
+    res.json({ source: source.id, manga, chapters });
   } catch (err) {
     console.error("GET /api/manga:", err.message);
-    res.status(502).json({ error: "Failed to reach MangaDex. Try again." });
+    res.status(502).json({ error: `Failed to reach ${source.name}. Try again.` });
   }
 });
 
@@ -85,27 +99,22 @@ app.get("/api/manga", async (req, res) => {
 app.get("/api/chapter/:id/prepare", async (req, res) => {
   const chapterId = req.params.id;
   const dataSaver = req.query.quality !== "original";
+  // Default to MangaDex so older clients (no ?source=) keep working.
+  const source = getSource(req.query.source) || getSource("mangadex");
 
-  // Server-Sent Events headers.
-  res.writeHead(200, {
-    "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache",
-    Connection: "keep-alive",
-  });
-  const send = (event, data) =>
-    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  const send = openSse(res);
 
   let aborted = false;
   req.on("close", () => (aborted = true));
 
   try {
-    const urls = await getChapterPageUrls(chapterId, { dataSaver });
+    const urls = await source.getChapterPageUrls(chapterId, { dataSaver });
     const images = [];
 
     send("progress", { done: 0, total: urls.length });
     for (let i = 0; i < urls.length; i++) {
       if (aborted) return; // client navigated away -> stop wasting bandwidth
-      images.push(await downloadImage(urls[i]));
+      images.push(await source.downloadImage(urls[i]));
       send("progress", { done: i + 1, total: urls.length });
     }
 
@@ -117,7 +126,7 @@ app.get("/api/chapter/:id/prepare", async (req, res) => {
     res.end();
   } catch (err) {
     console.error("prepare error:", err.message);
-    send("error", { message: "Download failed. MangaDex may be busy — retry." });
+    send("error", { message: `Download failed. ${source.name} may be busy — retry.` });
     res.end();
   }
 });
@@ -133,10 +142,87 @@ app.get("/api/chapter/download/:jobId", (req, res) => {
   streamChapterPdf(res, { filename: job.filename, images: job.images });
 });
 
+// 4) (Optional) Prepare several chapters into ONE zip of PDFs. Downloads every
+//    chapter sequentially — building one PDF buffer per chapter and freeing its
+//    page images as we go — streaming combined progress over SSE. Unlike the
+//    per-chapter flow this stashes a single job, so it isn't affected by the
+//    MAX_JOBS cap / 2-minute TTL that a long multi-chapter run would trip.
+app.get("/api/zip/prepare", async (req, res) => {
+  const source = getSource(req.query.source) || getSource("mangadex");
+  const dataSaver = req.query.quality !== "original";
+
+  // items = encodeURIComponent(JSON.stringify([{ id, label }, ...]))
+  let items;
+  try {
+    items = JSON.parse(req.query.items || "[]");
+  } catch {
+    items = [];
+  }
+
+  const send = openSse(res);
+  if (!Array.isArray(items) || items.length === 0) {
+    send("error", { message: "No chapters selected for the zip." });
+    return res.end();
+  }
+
+  let aborted = false;
+  req.on("close", () => (aborted = true));
+
+  try {
+    const files = [];
+    for (let idx = 0; idx < items.length; idx++) {
+      if (aborted) return;
+      const { id, label } = items[idx];
+      const urls = await source.getChapterPageUrls(id, { dataSaver });
+      const images = [];
+
+      send("progress", { index: idx, total: items.length, done: 0, pages: urls.length });
+      for (let i = 0; i < urls.length; i++) {
+        if (aborted) return;
+        images.push(await source.downloadImage(urls[i]));
+        send("progress", { index: idx, total: items.length, done: i + 1, pages: urls.length });
+      }
+
+      // Collapse this chapter to a PDF now so its raw images can be reclaimed.
+      const pdf = await buildChapterPdfBuffer({ images });
+      files.push({ name: `${safeName(label || `chapter-${idx + 1}`)}.pdf`, data: pdf });
+    }
+
+    const jobId = `zip-${Date.now()}`;
+    const zipName = safeName((req.query.name || "chapters").toString());
+    putJob(jobId, { zip: true, filename: `${zipName}.zip`, files });
+
+    send("ready", { jobId, chapters: files.length });
+    res.end();
+  } catch (err) {
+    console.error("zip prepare error:", err.message);
+    send("error", { message: `Zip failed. ${source.name} may be busy — retry.` });
+    res.end();
+  }
+});
+
+// 5) Stream the assembled ZIP, then drop the job so memory is reclaimed.
+app.get("/api/zip/download/:jobId", (req, res) => {
+  const job = takeJob(req.params.jobId);
+  if (!job || !job.zip) {
+    return res
+      .status(410)
+      .send("This download expired. Please prepare the chapters again.");
+  }
+  const buf = createZip(job.files);
+  res.setHeader("Content-Type", "application/zip");
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename="${encodeURIComponent(job.filename)}"`
+  );
+  res.setHeader("Content-Length", buf.length);
+  res.end(buf);
+});
+
 // ---------------------------------------------------------------------------
 // Render requires binding to process.env.PORT on 0.0.0.0.
 // ---------------------------------------------------------------------------
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`MangaDex PDF downloader listening on :${PORT}`);
+  console.log(`Manga PDF downloader listening on :${PORT}`);
 });
