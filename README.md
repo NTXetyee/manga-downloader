@@ -1,10 +1,30 @@
 # Manga → PDF Downloader
 
-Paste a **MangaDex** or **Dynasty Scans** title URL, pick chapters, and download
-each one as a well-formatted PDF — or tick **Zip together** to get all selected
-chapters bundled into a single `.zip`. Built to run on **Render.com's free
-tier** — everything is processed **in memory** (no disk writes), it binds to
-Render's dynamic `PORT`, and it survives the 15-minute idle spin-down.
+**Search by title** across MangaDex + Dynasty Scans at once (or paste a title
+URL), pick chapters, and download each one as a well-formatted PDF — or tick
+**Zip together** to get all selected chapters bundled into a single `.zip`.
+Built to run on **Render.com's free tier** — everything is processed **in
+memory** (no disk writes), it binds to Render's dynamic `PORT`, and it survives
+the 15-minute idle spin-down.
+
+## Search
+
+The search box queries every source in parallel and merges the hits into one
+deduplicated list:
+
+- **Not case-sensitive**, and matched **word by word** — a typo in one word of a
+  multi-word title still matches on the others (`lib/search.js`).
+- A title found in **both** sources collapses into a single result; opening it
+  shows a quick info page (cover + description, pulled from MangaDex) with a
+  **source selector** defaulted to MangaDex. Pick a source, then **Load
+  chapters**.
+- Cross-source de-duplication is a title-similarity heuristic (token
+  containment / Jaccard overlap in `lib/search.js`) — tune the threshold there if
+  you see wrong merges or missed pairs.
+
+> Dynasty has no JSON search endpoint, so `lib/dynasty.js` scrapes series links
+> out of its HTML results page. If Dynasty changes that markup, the regex in
+> `searchManga()` is the one spot to adjust.
 
 ## Supported sources
 
@@ -75,6 +95,7 @@ This is the difference between "works" and "IP temporarily blocked."
 ├── server.js            # Express app: static UI, /api routes, PORT binding
 ├── lib/
 │   ├── sources.js       # source registry + URL resolver
+│   ├── search.js        # merge/dedupe multi-source search hits
 │   ├── mangadex.js      # MangaDex source: API client + rate limiter + images
 │   ├── dynasty.js       # Dynasty Scans source (same interface)
 │   ├── pdf.js           # image buffers -> streamed PDF / PDF Buffer
@@ -97,10 +118,11 @@ Each file in `lib/` that backs a source exports the same shape, consumed by
 id, name                         // stable id + display name
 match(url)                       // does this source own the pasted URL?
 parseId(url)                     // url -> opaque manga id
-getManga(id)                     // -> { id, title, ... }
+getManga(id)                     // -> { id, title, description, cover, ... }
 getChapters(id, language)        // -> [{ id, chapter, volume, title, pages, group }]
 getChapterPageUrls(chapterId, o) // -> [imageUrl, ...]
 downloadImage(url)               // -> Buffer
+searchManga(query, limit)        // -> [{ source, id, title, cover, ... }]
 ```
 
 ### Zipping multiple chapters

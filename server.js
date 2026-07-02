@@ -2,7 +2,8 @@
 import express from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { resolveSource, getSource } from "./lib/sources.js";
+import { SOURCES, resolveSource, getSource } from "./lib/sources.js";
+import { mergeSearch } from "./lib/search.js";
 import { streamChapterPdf, buildChapterPdfBuffer } from "./lib/pdf.js";
 import { createZip } from "./lib/zip.js";
 
@@ -60,6 +61,15 @@ function openSse(res) {
 // keeps the free instance from spinning down after 15 min idle.
 app.get("/healthz", (_req, res) => res.json({ ok: true }));
 
+// Shared: load a title's metadata + chapter list for a known source + id.
+async function loadTitle(source, mangaId, language) {
+  const [manga, chapters] = await Promise.all([
+    source.getManga(mangaId),
+    source.getChapters(mangaId, language),
+  ]);
+  return { manga, chapters };
+}
+
 // 1) Resolve a source URL -> manga metadata + chapter list.
 //    The source is auto-detected from the URL and echoed back so the client can
 //    tag later prepare/download calls with it.
@@ -77,11 +87,11 @@ app.get("/api/manga", async (req, res) => {
         .status(400)
         .json({ error: `Could not find a ${source.name} id in that URL.` });
     }
-    const language = (req.query.lang || "en").toString();
-    const [manga, chapters] = await Promise.all([
-      source.getManga(mangaId),
-      source.getChapters(mangaId, language),
-    ]);
+    const { manga, chapters } = await loadTitle(
+      source,
+      mangaId,
+      (req.query.lang || "en").toString()
+    );
     if (chapters.length === 0) {
       return res.status(404).json({
         error: `No downloadable chapters found for this title.`,
@@ -90,6 +100,71 @@ app.get("/api/manga", async (req, res) => {
     res.json({ source: source.id, manga, chapters });
   } catch (err) {
     console.error("GET /api/manga:", err.message);
+    res.status(502).json({ error: `Failed to reach ${source.name}. Try again.` });
+  }
+});
+
+// 1a) Unified search across every source, deduplicated. No URL needed.
+//     Not case-sensitive; matching is word-based for typo tolerance.
+app.get("/api/search", async (req, res) => {
+  const q = (req.query.q || "").toString().trim();
+  if (!q) {
+    return res.status(400).json({ error: "Type a title to search for." });
+  }
+  try {
+    // Query every source in parallel; a single source failing shouldn't sink
+    // the whole search.
+    const lists = await Promise.all(
+      SOURCES.map((s) =>
+        s.searchManga(q).catch((err) => {
+          console.error(`${s.id} search:`, err.message);
+          return [];
+        })
+      )
+    );
+    res.json({ results: mergeSearch(q, lists.flat()) });
+  } catch (err) {
+    console.error("GET /api/search:", err.message);
+    res.status(502).json({ error: "Search failed. Try again." });
+  }
+});
+
+// 1b) Quick info for one title (used to fill covers/descriptions we didn't
+//     already have — chiefly Dynasty-only results).
+app.get("/api/info", async (req, res) => {
+  const source = getSource(req.query.source);
+  if (!source || !req.query.id) {
+    return res.status(400).json({ error: "Missing source or id." });
+  }
+  try {
+    const manga = await source.getManga(req.query.id.toString());
+    res.json({ manga });
+  } catch (err) {
+    console.error("GET /api/info:", err.message);
+    res.status(502).json({ error: `Failed to reach ${source.name}. Try again.` });
+  }
+});
+
+// 1c) Load a specific title's chapters by source + id (from a search result).
+app.get("/api/title", async (req, res) => {
+  const source = getSource(req.query.source);
+  if (!source || !req.query.id) {
+    return res.status(400).json({ error: "Missing source or id." });
+  }
+  try {
+    const { manga, chapters } = await loadTitle(
+      source,
+      req.query.id.toString(),
+      (req.query.lang || "en").toString()
+    );
+    if (chapters.length === 0) {
+      return res.status(404).json({
+        error: "No downloadable chapters found for this title.",
+      });
+    }
+    res.json({ source: source.id, manga, chapters });
+  } catch (err) {
+    console.error("GET /api/title:", err.message);
     res.status(502).json({ error: `Failed to reach ${source.name}. Try again.` });
   }
 });

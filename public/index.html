@@ -10,8 +10,21 @@
   <main class="wrap">
     <header>
       <h1>Manga&nbsp;→&nbsp;PDF</h1>
-      <p class="sub">Paste a MangaDex or Dynasty Scans title URL, pick chapters, download as PDF.</p>
+      <p class="sub">Search across MangaDex + Dynasty Scans, or paste a title URL. Pick chapters, download as PDF.</p>
     </header>
+
+    <form id="name-form" class="search">
+      <input
+        id="query"
+        type="text"
+        placeholder="Search by title, e.g. “kase san”…"
+        autocomplete="off"
+        required
+      />
+      <button type="submit" id="search-btn">Search</button>
+    </form>
+
+    <div class="or-divider"><span>or paste a URL</span></div>
 
     <form id="search-form" class="search">
       <input
@@ -35,6 +48,28 @@
     </form>
 
     <div id="alert" class="alert hidden" role="alert"></div>
+
+    <section id="results" class="hidden">
+      <h2 class="section-title">Search results</h2>
+      <div id="results-grid" class="results-grid"></div>
+    </section>
+
+    <section id="info" class="hidden">
+      <button id="info-back" class="ghost" type="button">← Back to results</button>
+      <div class="info-card">
+        <img id="info-cover" class="info-cover" alt="" />
+        <div class="info-body">
+          <h2 id="info-title"></h2>
+          <div id="info-meta" class="meta"></div>
+          <p id="info-desc" class="info-desc"></p>
+          <div id="info-source-row" class="src-row hidden">
+            <span class="src-label">Source:</span>
+            <div id="info-sources" class="src-buttons"></div>
+          </div>
+          <button id="info-load" type="button">Load chapters</button>
+        </div>
+      </div>
+    </section>
 
     <section id="manga" class="hidden">
       <div class="manga-head">

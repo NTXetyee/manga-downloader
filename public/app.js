@@ -14,9 +14,28 @@ const qualitySel = $("#quality");
 const zipChk = $("#zip");
 const downloadBtn = $("#download-btn");
 
+// Search + info-panel elements.
+const nameForm = $("#name-form");
+const queryInput = $("#query");
+const searchBtn = $("#search-btn");
+const resultsSec = $("#results");
+const resultsGrid = $("#results-grid");
+const infoSec = $("#info");
+const infoBack = $("#info-back");
+const infoCover = $("#info-cover");
+const infoTitle = $("#info-title");
+const infoMeta = $("#info-meta");
+const infoDesc = $("#info-desc");
+const infoSourceRow = $("#info-source-row");
+const infoSources = $("#info-sources");
+const infoLoad = $("#info-load");
+
+const SOURCE_NAMES = { mangadex: "MangaDex", dynasty: "Dynasty Scans" };
+
 let chapters = [];
 let source = "mangadex";
 let mangaTitle = "chapters";
+let selected = null; // { sources, selectedSource } for the open info panel
 
 function showAlert(msg) {
   alertBox.textContent = msg;
@@ -25,14 +44,27 @@ function showAlert(msg) {
 function clearAlert() {
   alertBox.classList.add("hidden");
 }
+const hide = (el) => el.classList.add("hidden");
+const show = (el) => el.classList.remove("hidden");
+
+// Adopt a { source, manga, chapters } payload and render the chapter list,
+// hiding the search UI. Shared by the URL loader and the search info panel.
+function showChapters(data) {
+  chapters = data.chapters;
+  source = data.source || "mangadex";
+  mangaTitle = data.manga.title || "chapters";
+  hide(resultsSec);
+  hide(infoSec);
+  renderManga(data.manga, chapters);
+}
 
 // -------------------------------------------------------------------------
-// Load manga + chapters
+// Load manga + chapters from a pasted URL
 // -------------------------------------------------------------------------
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
   clearAlert();
-  mangaSec.classList.add("hidden");
+  hide(mangaSec);
   loadBtn.disabled = true;
   loadBtn.textContent = "Loading…";
 
@@ -44,16 +76,171 @@ form.addEventListener("submit", async (e) => {
     const res = await fetch(`/api/manga?${params}`);
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Request failed");
-
-    chapters = data.chapters;
-    source = data.source || "mangadex";
-    mangaTitle = data.manga.title || "chapters";
-    renderManga(data.manga, chapters);
+    showChapters(data);
   } catch (err) {
     showAlert(err.message);
   } finally {
     loadBtn.disabled = false;
     loadBtn.textContent = "Load";
+  }
+});
+
+// -------------------------------------------------------------------------
+// Search by title across all sources
+// -------------------------------------------------------------------------
+nameForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  clearAlert();
+  hide(mangaSec);
+  hide(infoSec);
+  searchBtn.disabled = true;
+  searchBtn.textContent = "Searching…";
+
+  try {
+    const res = await fetch(`/api/search?q=${encodeURIComponent(queryInput.value)}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Search failed");
+    renderResults(data.results);
+  } catch (err) {
+    showAlert(err.message);
+  } finally {
+    searchBtn.disabled = false;
+    searchBtn.textContent = "Search";
+  }
+});
+
+function renderResults(results) {
+  resultsGrid.innerHTML = "";
+  if (!results.length) {
+    resultsGrid.innerHTML = `<p class="meta">No titles matched. Try fewer or different words.</p>`;
+    show(resultsSec);
+    return;
+  }
+
+  for (const r of results) {
+    const card = document.createElement("div");
+    card.className = "result-card";
+
+    const cover = r.cover
+      ? `<img class="result-cover" src="${r.cover}" alt="" loading="lazy"
+             onerror="this.classList.add('placeholder');this.removeAttribute('src');this.textContent='no cover'" />`
+      : `<div class="result-cover placeholder">no cover</div>`;
+
+    const badges = Object.keys(r.sources)
+      .map((s) =>
+        s === "mangadex"
+          ? `<span class="badge md">MangaDex</span>`
+          : `<span class="badge dy">Dynasty</span>`
+      )
+      .join("");
+
+    card.innerHTML = `
+      ${cover}
+      <div class="result-body">
+        <div class="result-title">${escapeHtml(r.title)}</div>
+        <div class="badges">${badges}</div>
+      </div>
+    `;
+    card.addEventListener("click", () => openInfo(r));
+    resultsGrid.appendChild(card);
+  }
+  show(resultsSec);
+}
+
+// -------------------------------------------------------------------------
+// Quick info panel for a chosen search result
+// -------------------------------------------------------------------------
+async function openInfo(result) {
+  clearAlert();
+  hide(mangaSec);
+  hide(resultsSec);
+
+  const sourceIds = Object.keys(result.sources);
+  // Prefer MangaDex for the displayed info + the default source selection.
+  const preferred = result.sources.mangadex ? "mangadex" : sourceIds[0];
+  selected = { sources: result.sources, selectedSource: preferred };
+
+  // Seed the panel with whatever the search already gave us…
+  fillInfo(result);
+  renderSourceButtons(sourceIds, preferred);
+  show(infoSec);
+
+  // …then, if we're missing a cover/description (typically a Dynasty-only
+  // result), fetch it on demand from that source.
+  if (!result.cover || !result.description) {
+    const infoSourceId = result.sources.mangadex || preferred;
+    try {
+      const res = await fetch(
+        `/api/info?source=${infoSourceId}&id=${encodeURIComponent(result.sources[infoSourceId])}`
+      );
+      const data = await res.json();
+      if (res.ok) fillInfo({ ...result, ...data.manga });
+    } catch {
+      /* keep the seeded info */
+    }
+  }
+}
+
+function fillInfo(m) {
+  infoTitle.textContent = m.title || "";
+  const bits = [m.year, m.status].filter(Boolean);
+  infoMeta.textContent = bits.join(" · ");
+  infoDesc.textContent = (m.description || "").slice(0, 600);
+  if (m.cover) {
+    infoCover.src = m.cover;
+    infoCover.style.display = "";
+  } else {
+    infoCover.removeAttribute("src");
+    infoCover.style.display = "none";
+  }
+}
+
+function renderSourceButtons(sourceIds, preferred) {
+  // Only show a selector when the title exists in more than one source.
+  if (sourceIds.length < 2) {
+    hide(infoSourceRow);
+    infoSources.innerHTML = "";
+    return;
+  }
+  infoSources.innerHTML = "";
+  for (const s of sourceIds) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = SOURCE_NAMES[s] || s;
+    if (s === preferred) btn.classList.add("active");
+    btn.addEventListener("click", () => {
+      selected.selectedSource = s;
+      infoSources
+        .querySelectorAll("button")
+        .forEach((b) => b.classList.toggle("active", b === btn));
+    });
+    infoSources.appendChild(btn);
+  }
+  show(infoSourceRow);
+}
+
+infoBack.addEventListener("click", () => {
+  hide(infoSec);
+  show(resultsSec);
+});
+
+infoLoad.addEventListener("click", async () => {
+  if (!selected) return;
+  const src = selected.selectedSource;
+  const id = selected.sources[src];
+  infoLoad.disabled = true;
+  infoLoad.textContent = "Loading…";
+  try {
+    const params = new URLSearchParams({ source: src, id, lang: langSel.value });
+    const res = await fetch(`/api/title?${params}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Failed to load chapters");
+    showChapters(data);
+  } catch (err) {
+    showAlert(err.message);
+  } finally {
+    infoLoad.disabled = false;
+    infoLoad.textContent = "Load chapters";
   }
 });
 
