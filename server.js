@@ -169,6 +169,40 @@ app.get("/api/title", async (req, res) => {
   }
 });
 
+// 1d) Cover-image proxy. uploads.mangadex.org applies hotlink protection: a
+//     browser <img> request carries our origin as Referer and gets a "read this
+//     on MangaDex" placeholder back. Fetching server-side lets us send the
+//     site's own Referer and relay the real image. Host-allowlisted so this
+//     can't be used as an open proxy.
+const COVER_HOSTS = {
+  "uploads.mangadex.org": "https://mangadex.org/",
+  "dynasty-scans.com": "https://dynasty-scans.com/",
+};
+app.get("/api/cover", async (req, res) => {
+  let url;
+  try {
+    url = new URL(req.query.url);
+  } catch {
+    return res.status(400).send("Bad cover url.");
+  }
+  const referer = COVER_HOSTS[url.hostname];
+  if (!referer || url.protocol !== "https:") {
+    return res.status(400).send("Cover host not allowed.");
+  }
+  try {
+    const upstream = await fetch(url.href, {
+      headers: { "User-Agent": "manga-pdf-downloader/1.0 (personal use)", Referer: referer },
+    });
+    if (!upstream.ok) return res.status(502).send("Cover fetch failed.");
+    res.setHeader("Content-Type", upstream.headers.get("content-type") || "image/jpeg");
+    res.setHeader("Cache-Control", "public, max-age=86400");
+    res.end(Buffer.from(await upstream.arrayBuffer()));
+  } catch (err) {
+    console.error("GET /api/cover:", err.message);
+    res.status(502).send("Cover fetch failed.");
+  }
+});
+
 // 2) Prepare a chapter: download every page, streaming progress over SSE.
 //    On completion we stash the buffers as a one-shot job and hand back a jobId.
 app.get("/api/chapter/:id/prepare", async (req, res) => {

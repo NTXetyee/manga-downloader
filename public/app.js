@@ -47,6 +47,16 @@ function clearAlert() {
 const hide = (el) => el.classList.add("hidden");
 const show = (el) => el.classList.remove("hidden");
 
+// Route MangaDex covers through our proxy (uploads.mangadex.org blocks hotlinks
+// with a placeholder image unless the request carries a mangadex.org Referer).
+// Other hosts (e.g. Dynasty) load directly.
+function coverSrc(url) {
+  if (!url) return null;
+  return url.includes("uploads.mangadex.org")
+    ? `/api/cover?url=${encodeURIComponent(url)}`
+    : url;
+}
+
 // Adopt a { source, manga, chapters } payload and render the chapter list,
 // hiding the search UI. Shared by the URL loader and the search info panel.
 function showChapters(data) {
@@ -122,7 +132,7 @@ function renderResults(results) {
     card.className = "result-card";
 
     const cover = r.cover
-      ? `<img class="result-cover" src="${r.cover}" alt="" loading="lazy"
+      ? `<img class="result-cover" src="${coverSrc(r.cover)}" alt="" loading="lazy"
              onerror="this.classList.add('placeholder');this.removeAttribute('src');this.textContent='no cover'" />`
       : `<div class="result-cover placeholder">no cover</div>`;
 
@@ -187,7 +197,7 @@ function fillInfo(m) {
   infoMeta.textContent = bits.join(" · ");
   infoDesc.textContent = (m.description || "").slice(0, 600);
   if (m.cover) {
-    infoCover.src = m.cover;
+    infoCover.src = coverSrc(m.cover);
     infoCover.style.display = "";
   } else {
     infoCover.removeAttribute("src");
