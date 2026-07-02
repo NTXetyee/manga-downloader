@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { SOURCES, resolveSource, getSource } from "./lib/sources.js";
 import { mergeSearch } from "./lib/search.js";
 import { streamChapterPdf, buildChapterPdfBuffer } from "./lib/pdf.js";
+import { toEmbeddable } from "./lib/image.js";
 import { createZip } from "./lib/zip.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -223,7 +224,8 @@ app.get("/api/chapter/:id/prepare", async (req, res) => {
     send("progress", { done: 0, total: urls.length });
     for (let i = 0; i < urls.length; i++) {
       if (aborted) return; // client navigated away -> stop wasting bandwidth
-      images.push(await source.downloadImage(urls[i]));
+      const raw = await source.downloadImage(urls[i]);
+      images.push(await toEmbeddable(raw)); // transcode WebP/GIF -> JPEG
       send("progress", { done: i + 1, total: urls.length });
     }
 
@@ -288,7 +290,8 @@ app.get("/api/zip/prepare", async (req, res) => {
       send("progress", { index: idx, total: items.length, done: 0, pages: urls.length });
       for (let i = 0; i < urls.length; i++) {
         if (aborted) return;
-        images.push(await source.downloadImage(urls[i]));
+        const raw = await source.downloadImage(urls[i]);
+        images.push(await toEmbeddable(raw)); // transcode WebP/GIF -> JPEG
         send("progress", { index: idx, total: items.length, done: i + 1, pages: urls.length });
       }
 

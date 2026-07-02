@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "express": "^4.19.2",
-    "pdfkit": "^0.15.0"
+    "pdfkit": "^0.15.0",
+    "sharp": "^0.33.5"
   }
 }

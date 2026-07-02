@@ -45,14 +45,21 @@ module in `lib/` that implements the small source interface and registering it i
 | --- | --- | --- |
 | Runtime | **Node.js 18+** | Built-in `fetch`, great streaming I/O, one language front-to-back. |
 | Web server | **Express** | Minimal, serves the static UI + JSON/SSE API. |
-| PDF | **PDFKit** | Streams a PDF directly to the HTTP response; natively embeds JPEG/PNG, so **no image-conversion native dependency** (important on the free tier). |
+| PDF | **PDFKit** | Streams a PDF directly to the HTTP response; natively embeds JPEG/PNG. |
+| Image transcode | **sharp** | PDFKit can't embed **WebP** (which Dynasty Scans serves) or GIF, so those pages are converted to JPEG first (`lib/image.js`). Loaded lazily + treated as optional — MangaDex (JPEG/PNG) works without it. |
 | Progress | **Server-Sent Events** | One-way page-by-page progress with zero client libraries. |
 | Storage | **None (in-memory)** | Render's filesystem is ephemeral; we never touch disk, so there's nothing to clean up. |
 
 > **Node vs. Python/Flask+ReportLab:** Python works too, but you'd typically add
 > Pillow/img2pdf for image handling and manage a WSGI server (gunicorn). The Node
-> path here keeps dependencies to just two packages and streams the PDF straight
-> to the socket, which is lighter on the free tier's ~512 MB RAM.
+> path here keeps dependencies lean and streams the PDF straight to the socket,
+> which is lighter on the free tier's ~512 MB RAM.
+>
+> **On `sharp`:** it's the one native dependency, pulled in only because Dynasty
+> Scans serves WebP and PDFKit can't embed it. It ships prebuilt binaries (no
+> build toolchain needed on Render or Windows) and is loaded via dynamic import,
+> so if it's ever missing the app still runs — WebP pages just fall back instead
+> of converting. `npm install` pulls it in automatically.
 
 ---
 
