@@ -1,9 +1,21 @@
-# MangaDex → PDF Downloader
+# Manga → PDF Downloader
 
-Paste a MangaDex title URL, pick chapters, and download each one as a
-well-formatted PDF. Built to run on **Render.com's free tier** — everything is
-processed **in memory** (no disk writes), it binds to Render's dynamic `PORT`,
-and it survives the 15-minute idle spin-down.
+Paste a **MangaDex** or **Dynasty Scans** title URL, pick chapters, and download
+each one as a well-formatted PDF — or tick **Zip together** to get all selected
+chapters bundled into a single `.zip`. Built to run on **Render.com's free
+tier** — everything is processed **in memory** (no disk writes), it binds to
+Render's dynamic `PORT`, and it survives the 15-minute idle spin-down.
+
+## Supported sources
+
+| Source | Paste a URL like | Notes |
+| --- | --- | --- |
+| **MangaDex** | `https://mangadex.org/title/<uuid>/…` | Language + quality (data-saver / original) selectable. |
+| **Dynasty Scans** | `https://dynasty-scans.com/series/<slug>` (or a `/chapters/<slug>` link) | English releases; the language/quality selectors don't apply. |
+
+Sources are auto-detected from the URL. Adding another is a matter of dropping a
+module in `lib/` that implements the small source interface and registering it in
+`lib/sources.js` — the server routes and UI are source-agnostic.
 
 ---
 
@@ -40,13 +52,14 @@ and it survives the 15-minute idle spin-down.
 
 ---
 
-## Respecting MangaDex's rate limits
+## Respecting each source's rate limits
 
-All API and image requests funnel through a single scheduler in
-`lib/mangadex.js` that:
+Every source funnels all its API and image requests through its own scheduler
+(`lib/mangadex.js`, `lib/dynasty.js`) that:
 
-- serializes requests and enforces a **~250 ms minimum gap** (≈4 req/s, under
-  the documented 5 req/s global cap),
+- serializes requests and enforces a **minimum gap** between them (MangaDex
+  ~250 ms ≈ 4 req/s, under its documented 5 req/s cap; Dynasty ~300 ms to stay
+  gentle on a small community server),
 - retries with back-off on network errors / HTTP 5xx,
 - honours **HTTP 429 + `Retry-After`** before retrying,
 - sends a descriptive `User-Agent`.
@@ -61,8 +74,11 @@ This is the difference between "works" and "IP temporarily blocked."
 .
 ├── server.js            # Express app: static UI, /api routes, PORT binding
 ├── lib/
-│   ├── mangadex.js      # API client + rate limiter + image downloader
-│   └── pdf.js           # image buffers -> streamed PDF
+│   ├── sources.js       # source registry + URL resolver
+│   ├── mangadex.js      # MangaDex source: API client + rate limiter + images
+│   ├── dynasty.js       # Dynasty Scans source (same interface)
+│   ├── pdf.js           # image buffers -> streamed PDF / PDF Buffer
+│   └── zip.js           # dependency-free ZIP writer (STORE method)
 ├── public/              # frontend (no build step)
 │   ├── index.html
 │   ├── style.css
@@ -71,6 +87,32 @@ This is the difference between "works" and "IP temporarily blocked."
 ├── package.json
 └── README.md
 ```
+
+### The source interface
+
+Each file in `lib/` that backs a source exports the same shape, consumed by
+`lib/sources.js`:
+
+```js
+id, name                         // stable id + display name
+match(url)                       // does this source own the pasted URL?
+parseId(url)                     // url -> opaque manga id
+getManga(id)                     // -> { id, title, ... }
+getChapters(id, language)        // -> [{ id, chapter, volume, title, pages, group }]
+getChapterPageUrls(chapterId, o) // -> [imageUrl, ...]
+downloadImage(url)               // -> Buffer
+```
+
+### Zipping multiple chapters
+
+Ticking **Zip together** (with 2+ chapters selected) posts the selection to
+`/api/zip/prepare`, which downloads each chapter sequentially, collapses it to a
+PDF buffer (freeing that chapter's page images before moving on), and stashes a
+single combined job. `/api/zip/download/:jobId` then emits one `.zip` of PDFs.
+Because it's one job, the multi-chapter run isn't affected by the `MAX_JOBS` cap
+or the 2-minute per-job TTL. The ZIP is assembled in memory with a tiny built-in
+writer (`lib/zip.js`, STORE method — the PDFs' embedded images are already
+compressed), so **no new dependency** is added.
 
 ---
 

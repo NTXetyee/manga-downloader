@@ -11,9 +11,12 @@ const titleEl = $("#manga-title");
 const metaEl = $("#manga-meta");
 const listEl = $("#chapters");
 const qualitySel = $("#quality");
+const zipChk = $("#zip");
 const downloadBtn = $("#download-btn");
 
 let chapters = [];
+let source = "mangadex";
+let mangaTitle = "chapters";
 
 function showAlert(msg) {
   alertBox.textContent = msg;
@@ -43,6 +46,8 @@ form.addEventListener("submit", async (e) => {
     if (!res.ok) throw new Error(data.error || "Request failed");
 
     chapters = data.chapters;
+    source = data.source || "mangadex";
+    mangaTitle = data.manga.title || "chapters";
     renderManga(data.manga, chapters);
   } catch (err) {
     showAlert(err.message);
@@ -62,14 +67,22 @@ function renderManga(manga, chapters) {
     li.className = "chapter";
     li.dataset.id = c.id;
 
-    const label = c.chapter ? `Ch. ${c.chapter}` : "Oneshot";
+    // A chapter number isn't always present (Dynasty oneshots/doujins use a
+    // named title instead) — fall back to the title, then to "Oneshot".
+    const main = c.chapter
+      ? `Ch. ${c.chapter}`
+      : c.title
+        ? escapeHtml(c.title)
+        : "Oneshot";
+    const extra = c.chapter && c.title ? "— " + escapeHtml(c.title) : "";
     const vol = c.volume ? `Vol. ${c.volume} · ` : "";
+    const pages = c.pages ? `${c.pages} pages · ` : "";
 
     li.innerHTML = `
       <input type="checkbox" class="pick" />
       <div class="info">
-        <div class="num">${label} <span class="ttl">${c.title ? "— " + escapeHtml(c.title) : ""}</span></div>
-        <div class="grp">${vol}${c.pages} pages · ${escapeHtml(c.group)}</div>
+        <div class="num">${main} <span class="ttl">${extra}</span></div>
+        <div class="grp">${vol}${pages}${escapeHtml(c.group)}</div>
       </div>
       <div class="status">—</div>
     `;
@@ -100,12 +113,27 @@ downloadBtn.addEventListener("click", async () => {
   clearAlert();
   downloadBtn.disabled = true;
 
-  for (const li of rows) {
-    await downloadOne(li);
+  try {
+    if (zipChk.checked && rows.length > 1) {
+      await downloadZip(rows);
+    } else {
+      // One chapter (or zip unchecked): stream each PDF individually.
+      for (const li of rows) {
+        await downloadOne(li);
+      }
+    }
+  } finally {
+    downloadBtn.disabled = false;
   }
-
-  downloadBtn.disabled = false;
 });
+
+// Filename stem for a chapter's PDF (server sanitizes it further).
+function pdfLabel(chapterId) {
+  const ch = chapters.find((c) => c.id === chapterId);
+  if (ch?.chapter) return `chapter-${ch.chapter}`;
+  if (ch?.title) return ch.title;
+  return chapterId;
+}
 
 function setStatus(li, text, cls = "") {
   const el = li.querySelector(".status");
@@ -127,13 +155,12 @@ function ensureBar(li) {
 function downloadOne(li) {
   return new Promise((resolve) => {
     const chapterId = li.dataset.id;
-    const ch = chapters.find((c) => c.id === chapterId);
-    const label = ch?.chapter ? `chapter-${ch.chapter}` : `oneshot-${chapterId.slice(0, 6)}`;
+    const label = pdfLabel(chapterId);
     const quality = qualitySel.value === "original" ? "original" : "datasaver";
     const fill = ensureBar(li);
 
     setStatus(li, "Starting…");
-    const params = new URLSearchParams({ quality, label });
+    const params = new URLSearchParams({ quality, label, source });
     const es = new EventSource(
       `/api/chapter/${chapterId}/prepare?${params}`
     );
@@ -162,6 +189,56 @@ function downloadOne(li) {
       try { msg = JSON.parse(ev.data).message; } catch {}
       setStatus(li, msg, "err");
       resolve(); // continue with the next chapter regardless
+    });
+  });
+}
+
+// Prepare several chapters server-side and download them as one .zip of PDFs.
+// A single SSE stream reports combined progress; `index` tells us which row.
+function downloadZip(rows) {
+  return new Promise((resolve) => {
+    const items = rows.map((li) => ({
+      id: li.dataset.id,
+      label: pdfLabel(li.dataset.id),
+    }));
+    const fills = rows.map((li) => ensureBar(li));
+    rows.forEach((li) => setStatus(li, "Queued…"));
+
+    const quality = qualitySel.value === "original" ? "original" : "datasaver";
+    const params = new URLSearchParams({
+      source,
+      quality,
+      name: mangaTitle,
+      items: JSON.stringify(items),
+    });
+    const es = new EventSource(`/api/zip/prepare?${params}`);
+
+    es.addEventListener("progress", (ev) => {
+      const { index, done, pages } = JSON.parse(ev.data);
+      const li = rows[index];
+      if (!li) return;
+      const pct = pages ? Math.round((done / pages) * 100) : 0;
+      fills[index].style.width = pct + "%";
+      setStatus(li, `${done}/${pages} pages`);
+    });
+
+    es.addEventListener("ready", (ev) => {
+      const { jobId } = JSON.parse(ev.data);
+      es.close();
+      rows.forEach((li, i) => {
+        fills[i].style.width = "100%";
+        setStatus(li, "Zipped ✓", "ok");
+      });
+      triggerDownload(`/api/zip/download/${jobId}`);
+      resolve();
+    });
+
+    es.addEventListener("error", (ev) => {
+      es.close();
+      let msg = "Zip failed";
+      try { msg = JSON.parse(ev.data).message; } catch {}
+      rows.forEach((li) => setStatus(li, msg, "err"));
+      resolve();
     });
   });
 }
